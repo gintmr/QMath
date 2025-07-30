@@ -25,14 +25,22 @@ def apply_RL_prompt(chunk, args, budget):
         return TCM_prompt(chunk, budget)
     elif args.prompt_type == "deepseek3" and os.environ['tip'] == "TCMv2":
         return TCMv2_prompt(chunk, budget)
+    elif args.prompt_type == "deepseek3" and os.environ['tip'] == "withoutremaining":
+        return withoutremaining_prompt(chunk, budget)
+    elif args.prompt_type == "deepseek3" and os.environ['tip'] == "8ratio":
+        return _8ratio_prompt(chunk, budget)
     elif args.prompt_type == "deepseek3" and os.environ['tip'] == "TCM+":
         return TCMv2_prompt(chunk, budget)
     elif args.prompt_type == "deepseek3" and os.environ['tip'] == "SST":
         return SST_prompt(chunk, budget)
     elif args.prompt_type == "deepseek3" and os.environ['tip'] == "Tokenskip":
         return Tokenskip_prompt(chunk, budget)
+    elif args.prompt_type == "deepseek3" and os.environ['tip'] == "thinkprune":
+        return thinkprune_prompt(chunk, budget)
     else:
         return chunk
+
+
 
 
 
@@ -82,6 +90,55 @@ def TCMv2_prompt(chunk, budget):
         # print(f"chunk[i] = {chunk[i]}")
     return chunk
 
+
+
+def withoutremaining_prompt(chunk, budget):
+    find_strings = "<｜Assistant｜>"
+    for i in range(len(chunk)):
+        head = chunk[i].split(find_strings)[0]
+        tail = chunk[i].split(find_strings)[1]
+        # add_prompt = f'\n(Complete thinking within {budget} tokens or fewer.)'
+        # add_prompt = f'\n(Complete thinking within {budget} tokens or fewer.)\n<remaining>{budget}</remaining>\n'
+        add_prompt = f"\n(Complete thinking within {budget} tokens or fewer.)"
+        # add_prompt = f'\n<remaining>{budget}</remaining>\n'
+
+        add_response = f""
+        # head += f"\n<remaining>{budget}</remaining>\n"
+        chunk[i] = head + add_prompt + find_strings + add_response + tail
+        # print(f"chunk[i] = {chunk[i]}")
+    return chunk
+
+def _8ratio_prompt(chunk, budget):
+    os.environ['budget'] = str(budget)
+    print(f"budget = {budget}")
+    find_strings = "<｜Assistant｜>"
+    for i in range(len(chunk)):
+        head = chunk[i].split(find_strings)[0]
+        tail = chunk[i].split(find_strings)[1]
+        # add_prompt = f'\n(Complete thinking within {budget} tokens or fewer.)'
+        add_prompt = f"\n(Complete thinking within {budget} tokens or fewer, 7 special tokens ( \n<remaining>7/8</remaining>\n , \n<remaining>6/8</remaining>\n , \n<remaining>5/8</remaining>\n , \n<remaining>4/8</remaining>\n , \n<remaining>3/8</remaining>\n , \n<remaining>2/8</remaining>\n , \n<remaining>1/8</remaining>\n ) will split the thinking process into 8 parts.)"
+        
+        add_response = f""
+
+        chunk[i] = head + add_prompt + find_strings + add_response + tail
+        
+    return chunk
+
+def thinkprune_prompt(chunk, budget):
+    find_strings = "<｜Assistant｜>"
+    for i in range(len(chunk)):
+        head = chunk[i].split(find_strings)[0]
+        tail = chunk[i].split(find_strings)[1]
+        # add_prompt = f'\n(Complete thinking within {budget} tokens or fewer.)'
+        # add_prompt = f'\n(Complete thinking within {budget} tokens or fewer.)\n<remaining>{budget}</remaining>\n'
+        add_prompt = f"The output of the assistant should be within {budget} tokens"
+        # add_prompt = f'\n<remaining>{budget}</remaining>\n'
+
+        add_response = f""
+        # head += f"\n<remaining>{budget}</remaining>\n"
+        chunk[i] = head + add_prompt + find_strings + add_response + tail
+        # print(f"chunk[i] = {chunk[i]}")
+    return chunk
 
 def TCM_prompt(chunk, budget):
     find_strings = "<｜Assistant｜>"

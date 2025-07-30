@@ -8,18 +8,19 @@ DATA_NAME="math500"
 # export CUDA_VISIBLE_DEVICES="4,5,6,7"
 export CUDA_VISIBLE_DEVICES="0,1,2,3"
 # export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
+export remaining=8ratio
 
 bash delete_file.sh ./start_positions.pt
 bash delete_file.sh ./early_positions.pt
 
 
-MODEL_NAME_OR_PATH='/mnt/lyc/wuxinrui/R1_training/training/deepscalerRL_10k_v2/deepscalerRL_10k_v2_step_70_reward_0.806/models'
+MODEL_NAME_OR_PATH='/mnt/lyc/wuxinrui/R1_training/training/7B_TCMv4_8ratio_v2/7B_TCMv4_8ratio_v2_global_step_108/models'
 PARENT_DIR=$(dirname "$MODEL_NAME_OR_PATH")  # 获取父目录
 MODEL_NAME=$(basename "$PARENT_DIR")        # 获取父目录的最后一部分
 echo MODEL_NAME: $MODEL_NAME
 export PE_MODE=default
 export position=ori
-export tip=TCMv2
+export tip=8ratio
 export stage=2
 export mode=TIP-$tip-STAGE-$stage
 export model=MODEL-$MODEL_NAME

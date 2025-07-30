@@ -24,8 +24,8 @@ if not os.path.exists(f'{os.environ["model"]}'):
 
 DATA_NAME = os.environ["DATA_NAME"]
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    datefmt='%Y-%m-%d %H:%M:%S', filename=f'{os.environ["model"]}/{os.environ["mode"]}-{DATA_NAME}.log', filemode='a')
-print(f"logging in {os.environ['model']}/{os.environ['mode']}-{DATA_NAME}.log")
+                    datefmt='%Y-%m-%d %H:%M:%S', filename=f'{os.environ["model"]}/{os.environ["mode"]}-{DATA_NAME}-Length_Metric.log', filemode='a')
+print(f"logging in {os.environ['model']}/{os.environ['mode']}-{DATA_NAME}-Length_Metric.log")
 
 logging.info(f"modelname's infor:  {os.environ['modelname']}")
 logging.info(f"mode's infor:  {os.environ['mode']}")
@@ -58,52 +58,6 @@ def process_chunk(chunk, args, available_gpus, stop_words, output_queue, index, 
     lock_file = f"/tmp/gpu_{gpu_id}.lock"  # 每个 GPU 对应一个锁文件
     
     
-    # llm = LLM(
-    #     model=args.model_name_or_path,
-    #     tensor_parallel_size=1,
-    #     pipeline_parallel_size=1,
-    #     trust_remote_code=True,
-    #     gpu_memory_utilization=0.95,
-    #     enforce_eager=True,
-    #     max_seq_len_to_capture=65536,
-    # )
-    
-    # chunk_outputs = []
-    # for i in range(0, len(chunk), 125):
-    #     chunk_batch = chunk[i:i + 125]
-    #     if args.use_vllm:
-    #         if os.environ['stage'] == "add":
-    #             budget = args.max_tokens_per_call + 50
-    #         else:
-    #             budget = args.max_tokens_per_call
-    #         os.environ["position"] = 'start'
-    #         chunk_batch_outputs = llm.generate(
-    #             chunk_batch,
-    #             SamplingParams(
-    #                 temperature=args.temperature,
-    #                 top_p=0.9,
-    #                 max_tokens=budget if not two_stage else 20,
-    #                 n=1,
-    #                 stop=stop_words,
-    #                 stop_token_ids=(
-    #                     [151645, 151643]
-    #                     if "qwen2" in args.model_name_or_path.lower()
-    #                     else None
-    #                 ),
-    #                 skip_special_tokens=False,
-    #             ),
-    #         )
-    #         if os.path.exists('./start_positions.pt'):
-    #             os.remove('./start_positions.pt')
-    #         if os.path.exists('./early_positions.pt'):
-    #             os.remove('./early_positions.pt')
-
-    #         chunk_batch_outputs = sorted(chunk_batch_outputs, key=lambda x: int(x.request_id))
-    #         chunk_batch_outputs = [output.outputs[0].text for output in chunk_batch_outputs]
-    #         batch_chunk = [single_chunk + chunk_output for single_chunk, chunk_output in zip(chunk_batch, chunk_batch_outputs)]
-    #         chunk_outputs.extend(batch_chunk)
-    # # 将处理结果存储到共享列表中
-    # output_queue.put((index, chunk_outputs))
 
     # 获取文件锁（排他锁）
     with open(lock_file, 'w') as f:
@@ -137,9 +91,8 @@ def process_chunk(chunk, args, available_gpus, stop_words, output_queue, index, 
                         chunk_batch,
                         SamplingParams(
                             temperature=args.temperature,
-                            # top_p=1,
                             top_p=0.9,
-                            max_tokens=budget if not two_stage else 20,
+                            max_tokens=int(budget*1.3),
                             n=1,
                             stop=stop_words,
                             stop_token_ids=(
@@ -162,9 +115,6 @@ def process_chunk(chunk, args, available_gpus, stop_words, output_queue, index, 
 
             # 处理完成后，将结果存入队列
             output_queue.put((index, chunk_outputs))
-            
-            del llm
-            torch.cuda.empty_cache()
 
         finally:
             # 显式销毁 llm 对象
@@ -308,28 +258,33 @@ def setup(args):
     data_list = args.data_names.split(",")
     results = []
     for data_name in data_list:
-        results.append(main(llm, tokenizer, data_name, args))
+        results.extend(main(llm, tokenizer, data_name, args))
 
     # add "avg" result to data_list and results
-    data_list.append("avg")
-    results.append(
-        {
-            "acc": sum([result["acc"] for result in results]) / len(results),
+
+    answer_len_list, length_reward_list = [], []
+    for result in results:
+        answer_len, length_reward = result[0], result[1]
+        answer_len_list.extend([answer_len])
+        length_reward_list.extend([length_reward])
+    
+    print(f"len(answer_len_list): {len(answer_len_list)}")
+    
+    avg_answer_len = sum(answer_len_list) / len(answer_len_list)
+    avg_length_reward = sum(length_reward_list) / len(length_reward_list)
+        
+        
+    results ={
+            "avg_answer_len": avg_answer_len,
+            "avg_length_reward": avg_length_reward,
         }
-    )
-
+    print(f"!!!!!!!!!!!!\n"*10)
+    print(f"results: {results}")
     # print all results
-    pad = max([len(data_name) for data_name in data_list])
-    print("\t".join(data_name.ljust(pad, " ") for data_name in data_list))
-    print("\t".join([f"{result['acc']:.1f}".ljust(pad, " ") for result in results]))
- 
-    logging.info("\t".join(data_name.ljust(pad, " ") for data_name in data_list))
-    logging.info(f"os.environ['PE_MODE'] = {os.environ['PE_MODE']}")
-    logging.info(f"path = {args.model_name_or_path}")
-    logging.info(f"tip = {os.environ['tip']}")
-    logging.info(f"BUDGET = {os.environ['BUDGET']}")
-    logging.info("\t".join([f"{result['acc']:.1f}".ljust(pad, " ") for result in results]))
 
+    logging.info(f"!!!!!!!!!!!!\n"*10)
+    logging.info(f"results: {results}")
+    return results
 
 def is_multi_choice(answer):
     for c in answer:
@@ -759,273 +714,32 @@ def main(llm, tokenizer, data_name, args):
         # print(f"Encoding '{test_token}':", tokenizer.encode(test_token, add_special_tokens=False))
         print(outputs[:3])
         
-        #################!     
-        ###! stage? 1 or 2 or add
-        if os.environ['stage'] == "2":
-            print("stage 2")
-            two_stage_outputs = []
-            modified_outputs = []
-            print(f"len of outputs: {len(outputs)}")
-            for output in outputs:
-                # 去除output字符串末尾的换行符，并添加</think>和**Final Answer**\n\\boxed字符串，将结果添加到modified_outputs列表中
-                if "<｜end▁of▁sentence｜>" in output:
-                    start_index = output.index("<｜end▁of▁sentence｜>")
-                    output = output[:start_index]
-                    # output = output.replace("<｜end▁of▁sentence｜>", "")
-                modified_output = output + "\n</think>\n\n**Final Answer**\\boxed"
-                modified_outputs.append(modified_output)
-                # print(f"modified_output_len: {len(modified_output)}")
-            
-            available_gpus = os.environ["CUDA_VISIBLE_DEVICES"].split(",")  # 示例GPU列表，根据实际情况修改
-            num_gpus = len(available_gpus)
-            manager = Manager()
-            output_queue = Queue()
-            processes = []
-            multi_outputs = []
-            prompts = modified_outputs
-            chunk_size = len(prompts) // num_gpus
-            chunks = [prompts[i:i + chunk_size] for i in range(0, len(prompts), chunk_size)]
-            num_rounds = (len(chunks) + num_gpus - 1) // num_gpus #g 轮次数等于最大GPU上的任务数
-
-            for round_idx in range(num_rounds):
-                start_idx = round_idx * num_gpus
-                end_idx = min((round_idx + 1) * num_gpus, len(chunks))
-                
-                for i in range(start_idx, end_idx):
-                    chunk = chunks[i]
-                    p = Process(target=process_chunk, args=(chunk, args, available_gpus, stop_words, output_queue, i))
-                    processes.append(p)
-                    p.start()
-            # for i, chunk in enumerate(chunks):
-            #     print(f"Processing chunk {i} with size {len(chunk)}")
-            #     p = Process(target=process_chunk, args=(chunk, args, available_gpus, stop_words, output_queue, i))
-            #     processes.append(p)
-            #     p.start()
-            for _ in range(len(chunks)):
-                result = output_queue.get()
-                if isinstance(result, tuple) and len(result) == 2:
-                    multi_outputs.append(result)
-                else:
-                    print(f"Error: Received non-tuple result: {result}")
-                # multi_outputs.extend(output_queue.get())
-            for p in processes:
-                p.join()
-            multi_outputs.sort(key=lambda x: x[0])
-            outputs = []
-            for _, chunk_output in multi_outputs:
-                outputs.extend(chunk_output)
-
-
-
-        elif os.environ['stage'] == "1":
-            outputs = outputs
-        
-        # elif os.environ['stage'] == "add":
-        #     llm = LLM(
-        #     model=args.model_name_or_path,
-        #     tensor_parallel_size=1,
-        #     pipeline_parallel_size=1,
-        #     trust_remote_code=True,
-        #     gpu_memory_utilization=0.85,
-        #     enforce_eager=True,
-        #     max_seq_len_to_capture=5000000,
-        # )
-        #     two_stage_outputs = []
-        #     modified_outputs = []
-        #     print(f"len of outputs: {len(outputs)}")
-        #     for output in outputs:
-        #         # 去除output字符串末尾的换行符，并添加</think>和**Final Answer**\n\\boxed字符串，将结果添加到modified_outputs列表中
-        #         if "<｜end▁of▁sentence｜>" in output:
-        #             start_index = output.index("<｜end▁of▁sentence｜>")
-        #             output = output[:start_index]
-        #             # output = output.replace("<｜end▁of▁sentence｜>", "")
-        #         modified_output = output
-        #         modified_outputs.append(modified_output)
-        #         # print(f"modified_output_len: {len(modified_output)}")
-            
-        #     for i in range(0, num_prompts, chunk_size):
-        #         modified_chunk = outputs[i:i + chunk_size]  # 获取当前的 chunk
-        #         if args.use_vllm:
-        #             os.environ["position"] = 'start'
-
-        #             second_outputs = llm.generate(
-        #                 modified_chunk,
-        #                 SamplingParams(
-        #                     temperature=args.temperature,
-        #                     top_p=args.top_p,
-        #                     max_tokens=50,
-        #                     n=1,
-        #                     stop=stop_words,
-        #                     stop_token_ids=(
-        #                         [151645, 151643]
-        #                     ),
-        #                     skip_special_tokens=False, #G 设置特殊token的可见性
-        #                 ),
-        #             )
-            
-            
-        #         if os.path.exists('./start_positions.pt'):
-        #             os.remove('./start_positions.pt')
-        #             print('start_positions.pt removed')
-        #         if os.path.exists('./early_positions.pt'):
-        #             os.remove('./early_positions.pt')
-        #             print('early_positions.pt removed')
-                    
-        #         second_outputs = sorted(second_outputs, key=lambda x: int(x.request_id))
-        #         second_outputs = [output.outputs[0].text for output in second_outputs]
-                
-        #         # Combine initial and second outputs
-        #         combined_outputs = [init + second for init, second in zip(modified_chunk, second_outputs)]
-                
-        #         print(f"len of combined_outputs:{len(combined_outputs)}")
-        #         two_stage_outputs.extend(combined_outputs) ## 直接覆盖掉就好
-                               
-        #     outputs = two_stage_outputs
         
         #################!
         print(f"outputs:{len(outputs)}")
         print(f"current_prompts:{len(current_prompts)}")
         assert len(outputs) == len(current_prompts)
         
-        #g 以防万一，再次sort回答
-        # print(f"outputs[:5]: {outputs[:5]}")
-        # print(f"current_prompts[:5]: {current_prompts[:5]}")
-        # sorted_outputs = []
-        # for (index, prompt) in current_prompts:
-        #     for i in range(len(outputs)):
-        #         if prompt in outputs[i]:
-        #             sorted_outputs.append(outputs[i])
-        # outputs = sorted_outputs
-        # print(f"outputs[:5]: {outputs[123:128]}")
-        # print(f"current_prompts[:5]: {current_prompts[123:128]}")
-        # assert len(outputs) == len(current_prompts)
         
-        # print(outputs)
-        
-        # import pdb
-        # pdb.set_trace()
-        # process all outputs
-        remain_prompts = []
-        remain_codes = []
-        for (i, query), output in zip(current_prompts, outputs):
-            output = output.rstrip()
-            query += output
-            if args.prompt_type == "pal":
-                remain_prompts.append((i, query))
-                if "```python" in output:
-                    output = extract_program(query)
-                remain_codes.append(output)
-            elif args.prompt_type == "cot":
-                end_prompts.append((i, query))
-            elif "boxed" not in output and output.endswith("```"):
-                program = extract_program(query)
-                remain_prompts.append((i, query))
-                remain_codes.append(program)
+        def get_length_reward(answer, budget):
+            len_of_token = len(tokenizer.encode(answer, add_special_tokens=False))
+            if (len_of_token) >= budget:
+                reward = max((1 - 16 * ((len_of_token - budget) / budget) * ((len_of_token - budget) / budget)), 0)
             else:
-                end_prompts.append((i, query))
+                reward = 1
 
-        # execute the remain prompts
-        remain_results = executor.batch_apply(remain_codes)
-        for k in range(len(remain_prompts)):
-            i, query = remain_prompts[k]
-            res, report = remain_results[k]
-            exec_result = res if res else report
-            if "pal" in args.prompt_type:
-                exec_result = "\\boxed{" + exec_result + "}"
-            exec_result = f"\n```output\n{exec_result}\n```\n"
-            query += exec_result
-            # not end
-            if epoch == max_func_call - 1:
-                query += "\nReach max function call limit."
-            remain_prompts[k] = (i, query)
+            return [len_of_token, reward]
+            
+        budget = args.max_tokens_per_call
 
-    # unsolved samples
-    print("Unsolved samples:", len(remain_prompts))
-    end_prompts.extend(remain_prompts)
-    # sort by idx
-    end_prompts = sorted(end_prompts, key=lambda x: x[0])
-
-    # remove input_prompt from end_prompt
-    codes = []
-    assert len(input_prompts) == len(end_prompts)
-    for i in range(len(input_prompts)):
-        if i ==1:
-            print(f"input_prompts[{i}] = {input_prompts[i]}")
-            print(f"end_prompts[{i}] = {end_prompts[i]}")
-        _, end_prompt = end_prompts[i]
-        code = end_prompt.split(input_prompts[i])[-1].strip()
-        for stop_word in stop_words:
-            if stop_word in code:
-                code = code.split(stop_word)[0].strip()
-        if args.prompt_type == "deepseek3":
-            # print(f"code = {code.split('<｜Assistant｜>')}")
-            if '<｜Assistant｜>' in code:
-                code  = code.split("<｜Assistant｜>")[1]
-            else:
-                code = code
-        codes.append(code)
+        length_reward = []
+        for output in outputs:
+            answer = output.split('<｜Assistant｜>')[-1]
+            length_reward.append(get_length_reward(answer, budget))
         
+        return length_reward
+            
     
-    # extract preds
-    # results = [
-    #     run_execute(executor, clean_code(code), args.prompt_type, data_name) for code in codes
-    # ]    
-    results = [
-        run_execute(executor, clean_code(code), args.prompt_type, data_name) for code in codes
-    ]
-    time_use = time.time() - start_time
-
-    # put results back to examples
-    all_samples = []
-    for i, sample in enumerate(samples):
-        code = codes[i * args.n_sampling : (i + 1) * args.n_sampling]
-        result = results[i * args.n_sampling : (i + 1) * args.n_sampling]
-        preds = [item[0] for item in result]
-        reports = [item[1] for item in result]
-        for j in range(len(preds)):
-            if sample["gt"] in ["A", "B", "C", "D", "E"] and preds[j] not in [
-                "A",
-                "B",
-                "C",
-                "D",
-                "E",
-            ]:
-                preds[j] = choice_answer_clean(code[j])
-            elif is_multi_choice(sample["gt"]) and not is_multi_choice(preds[j]):
-                # remove any non-choice char
-                preds[j] = "".join(
-                    [c for c in preds[j] if c in ["A", "B", "C", "D", "E"]]
-                )
-
-        # sample.pop("prompt")  # save the prompt for debug
-        sample.update({"code": code, "pred": preds, "report": reports})
-        all_samples.append(sample)
-
-    # add processed samples
-    all_samples.extend(processed_samples)#
-    #G 评估时采用的answer均是从终止符开始截断的。
-    all_samples, result_json = evaluate(
-        samples=all_samples,
-        data_name=data_name,
-        prompt_type=args.prompt_type,
-        execute=True,
-    )
-
-    # save outputs
-    if len(processed_samples) < len(all_samples) and args.save_outputs:
-        save_jsonl(all_samples, out_file)
-
-    result_json["time_use_in_second"] = time_use
-    result_json["time_use_in_minite"] = (
-        f"{int(time_use // 60)}:{int(time_use % 60):02d}"
-    )
-
-    with open(
-        out_file.replace(".jsonl", "_metrics.json"), "w"
-    ) as f:
-        json.dump(result_json, f, indent=4)
-    return result_json
-
 
 if __name__ == "__main__":
     multiprocessing.set_start_method('spawn')

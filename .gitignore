@@ -181,3 +181,5 @@ training/
 *.log
 MODEL-*/
 wrong_model/*
+MODEL*/
+MODEL**/

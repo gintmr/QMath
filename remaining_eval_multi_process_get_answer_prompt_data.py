@@ -137,7 +137,6 @@ def process_chunk(chunk, args, available_gpus, stop_words, output_queue, index, 
                         chunk_batch,
                         SamplingParams(
                             temperature=args.temperature,
-                            # top_p=1,
                             top_p=0.9,
                             max_tokens=budget if not two_stage else 20,
                             n=1,
@@ -162,9 +161,6 @@ def process_chunk(chunk, args, available_gpus, stop_words, output_queue, index, 
 
             # 处理完成后，将结果存入队列
             output_queue.put((index, chunk_outputs))
-            
-            del llm
-            torch.cuda.empty_cache()
 
         finally:
             # 显式销毁 llm 对象
@@ -820,6 +816,12 @@ def main(llm, tokenizer, data_name, args):
         elif os.environ['stage'] == "1":
             outputs = outputs
         
+        
+        
+        with open("/mnt/lyc/wuxinrui/LLaMA-Factory/TCMv4/TCMv4_format_random2000_answer_prompt_generate.jsonl", "w") as f:
+            for output in outputs:
+                f.write(output + "\n")
+        print('TCMv4_format_random2000_answer_prompt_generated!!!\n' * 20)
         # elif os.environ['stage'] == "add":
         #     llm = LLM(
         #     model=args.model_name_or_path,
@@ -902,129 +904,8 @@ def main(llm, tokenizer, data_name, args):
         
         # print(outputs)
         
-        # import pdb
-        # pdb.set_trace()
         # process all outputs
-        remain_prompts = []
-        remain_codes = []
-        for (i, query), output in zip(current_prompts, outputs):
-            output = output.rstrip()
-            query += output
-            if args.prompt_type == "pal":
-                remain_prompts.append((i, query))
-                if "```python" in output:
-                    output = extract_program(query)
-                remain_codes.append(output)
-            elif args.prompt_type == "cot":
-                end_prompts.append((i, query))
-            elif "boxed" not in output and output.endswith("```"):
-                program = extract_program(query)
-                remain_prompts.append((i, query))
-                remain_codes.append(program)
-            else:
-                end_prompts.append((i, query))
-
-        # execute the remain prompts
-        remain_results = executor.batch_apply(remain_codes)
-        for k in range(len(remain_prompts)):
-            i, query = remain_prompts[k]
-            res, report = remain_results[k]
-            exec_result = res if res else report
-            if "pal" in args.prompt_type:
-                exec_result = "\\boxed{" + exec_result + "}"
-            exec_result = f"\n```output\n{exec_result}\n```\n"
-            query += exec_result
-            # not end
-            if epoch == max_func_call - 1:
-                query += "\nReach max function call limit."
-            remain_prompts[k] = (i, query)
-
-    # unsolved samples
-    print("Unsolved samples:", len(remain_prompts))
-    end_prompts.extend(remain_prompts)
-    # sort by idx
-    end_prompts = sorted(end_prompts, key=lambda x: x[0])
-
-    # remove input_prompt from end_prompt
-    codes = []
-    assert len(input_prompts) == len(end_prompts)
-    for i in range(len(input_prompts)):
-        if i ==1:
-            print(f"input_prompts[{i}] = {input_prompts[i]}")
-            print(f"end_prompts[{i}] = {end_prompts[i]}")
-        _, end_prompt = end_prompts[i]
-        code = end_prompt.split(input_prompts[i])[-1].strip()
-        for stop_word in stop_words:
-            if stop_word in code:
-                code = code.split(stop_word)[0].strip()
-        if args.prompt_type == "deepseek3":
-            # print(f"code = {code.split('<｜Assistant｜>')}")
-            if '<｜Assistant｜>' in code:
-                code  = code.split("<｜Assistant｜>")[1]
-            else:
-                code = code
-        codes.append(code)
         
-    
-    # extract preds
-    # results = [
-    #     run_execute(executor, clean_code(code), args.prompt_type, data_name) for code in codes
-    # ]    
-    results = [
-        run_execute(executor, clean_code(code), args.prompt_type, data_name) for code in codes
-    ]
-    time_use = time.time() - start_time
-
-    # put results back to examples
-    all_samples = []
-    for i, sample in enumerate(samples):
-        code = codes[i * args.n_sampling : (i + 1) * args.n_sampling]
-        result = results[i * args.n_sampling : (i + 1) * args.n_sampling]
-        preds = [item[0] for item in result]
-        reports = [item[1] for item in result]
-        for j in range(len(preds)):
-            if sample["gt"] in ["A", "B", "C", "D", "E"] and preds[j] not in [
-                "A",
-                "B",
-                "C",
-                "D",
-                "E",
-            ]:
-                preds[j] = choice_answer_clean(code[j])
-            elif is_multi_choice(sample["gt"]) and not is_multi_choice(preds[j]):
-                # remove any non-choice char
-                preds[j] = "".join(
-                    [c for c in preds[j] if c in ["A", "B", "C", "D", "E"]]
-                )
-
-        # sample.pop("prompt")  # save the prompt for debug
-        sample.update({"code": code, "pred": preds, "report": reports})
-        all_samples.append(sample)
-
-    # add processed samples
-    all_samples.extend(processed_samples)#
-    #G 评估时采用的answer均是从终止符开始截断的。
-    all_samples, result_json = evaluate(
-        samples=all_samples,
-        data_name=data_name,
-        prompt_type=args.prompt_type,
-        execute=True,
-    )
-
-    # save outputs
-    if len(processed_samples) < len(all_samples) and args.save_outputs:
-        save_jsonl(all_samples, out_file)
-
-    result_json["time_use_in_second"] = time_use
-    result_json["time_use_in_minite"] = (
-        f"{int(time_use // 60)}:{int(time_use % 60):02d}"
-    )
-
-    with open(
-        out_file.replace(".jsonl", "_metrics.json"), "w"
-    ) as f:
-        json.dump(result_json, f, indent=4)
-    return result_json
 
 
 if __name__ == "__main__":

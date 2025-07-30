@@ -15,12 +15,11 @@ NUM_TEST_SAMPLE=-1
 export DATA_NAME=$DATA_NAME
 
 # 定义 max_tokens_per_call 的取值范围
-# for tokens in 100 250 500 1000
+for tokens in 2000
 # for tokens in 100 250 500 1000 2000 4000 6000 10000
-# for tokens in 100 250 500 1000 2000 4000 6000
-for tokens in 1000 2000 4000 6000
+# for tokens in 4000 6000 10000
 # for tokens in 16
-# for tokens in 8000
+# for tokens in 10000
 # for tokens in 6000 
 # for tokens in 4000 6000 10000 
 do
@@ -28,7 +27,7 @@ do
     export BUDGET=$tokens
     echo "export BUDGET=$tokens \n"
     TOKENIZERS_PARALLELISM=true \
-    python3 -u ./remaining_eval_multi_process.py \
+    python3 -u /mnt/lyc/wuxinrui/Qwen2.5-Math/evaluation/remaining_eval_multi_process_get_answer_prompt_data.py \
         --model_name_or_path ${MODEL_NAME_OR_PATH} \
         --data_names ${DATA_NAME} \
         --output_dir ./$modelname/$tokens \

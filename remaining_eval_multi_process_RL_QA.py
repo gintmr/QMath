@@ -44,135 +44,59 @@ import multiprocessing
 from multiprocessing import Process, Manager, Queue
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
-import fcntl
-import torch
 
-def process_chunk(chunk, args, available_gpus, stop_words, output_queue, index, two_stage=False):
+def process_chunk(chunk, args, available_gpus, stop_words, output_queue, index):
     """
     处理一个数据块的函数
     """
-    GPU_LOCK_FILES = {gpu_id: f"/tmp/gpu_{gpu_id}.lock" for gpu_id in available_gpus}
     # 设置当前进程使用的GPU
     os.environ["CUDA_VISIBLE_DEVICES"] = str(available_gpus[index % len(available_gpus)])
-    gpu_id = available_gpus[index % len(available_gpus)]
-    lock_file = f"/tmp/gpu_{gpu_id}.lock"  # 每个 GPU 对应一个锁文件
+    llm = LLM(
+        model=args.model_name_or_path,
+        tensor_parallel_size=1,
+        pipeline_parallel_size=1,
+        trust_remote_code=True,
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,
+        max_seq_len_to_capture=65536,
+    )
     
-    
-    # llm = LLM(
-    #     model=args.model_name_or_path,
-    #     tensor_parallel_size=1,
-    #     pipeline_parallel_size=1,
-    #     trust_remote_code=True,
-    #     gpu_memory_utilization=0.95,
-    #     enforce_eager=True,
-    #     max_seq_len_to_capture=65536,
-    # )
-    
-    # chunk_outputs = []
-    # for i in range(0, len(chunk), 125):
-    #     chunk_batch = chunk[i:i + 125]
-    #     if args.use_vllm:
-    #         if os.environ['stage'] == "add":
-    #             budget = args.max_tokens_per_call + 50
-    #         else:
-    #             budget = args.max_tokens_per_call
-    #         os.environ["position"] = 'start'
-    #         chunk_batch_outputs = llm.generate(
-    #             chunk_batch,
-    #             SamplingParams(
-    #                 temperature=args.temperature,
-    #                 top_p=0.9,
-    #                 max_tokens=budget if not two_stage else 20,
-    #                 n=1,
-    #                 stop=stop_words,
-    #                 stop_token_ids=(
-    #                     [151645, 151643]
-    #                     if "qwen2" in args.model_name_or_path.lower()
-    #                     else None
-    #                 ),
-    #                 skip_special_tokens=False,
-    #             ),
-    #         )
-    #         if os.path.exists('./start_positions.pt'):
-    #             os.remove('./start_positions.pt')
-    #         if os.path.exists('./early_positions.pt'):
-    #             os.remove('./early_positions.pt')
-
-    #         chunk_batch_outputs = sorted(chunk_batch_outputs, key=lambda x: int(x.request_id))
-    #         chunk_batch_outputs = [output.outputs[0].text for output in chunk_batch_outputs]
-    #         batch_chunk = [single_chunk + chunk_output for single_chunk, chunk_output in zip(chunk_batch, chunk_batch_outputs)]
-    #         chunk_outputs.extend(batch_chunk)
-    # # 将处理结果存储到共享列表中
-    # output_queue.put((index, chunk_outputs))
-
-    # 获取文件锁（排他锁）
-    with open(lock_file, 'w') as f:
-        fcntl.flock(f, fcntl.LOCK_EX)  # 获取排他锁，其他进程会阻塞直到锁释放
-
-        try:
-            # 设置当前进程使用的 GPU
-            os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-            
-            # 初始化 LLM（确保在锁内执行，避免多个进程同时初始化）
-            llm = LLM(
-                model=args.model_name_or_path,
-                tensor_parallel_size=1,
-                pipeline_parallel_size=1,
-                trust_remote_code=True,
-                gpu_memory_utilization=0.95,
-                enforce_eager=True,
-                max_seq_len_to_capture=65536,
+    chunk_outputs = []
+    for i in range(0, len(chunk), 125):
+        chunk_batch = chunk[i:i + 125]
+        if args.use_vllm:
+            if os.environ['stage'] == "add":
+                budget = args.max_tokens_per_call + 50
+            elif os.environ['stage'] == "1":
+                budegt = args.max_tokens_per_call
+            os.environ["position"] = 'start'
+            chunk_batch_outputs = llm.generate(
+                chunk_batch,
+                SamplingParams(
+                    temperature=args.temperature,
+                    top_p=0.9,
+                    max_tokens=budget,
+                    n=1,
+                    stop=stop_words,
+                    stop_token_ids=(
+                        [151645, 151643]
+                        if "qwen2" in args.model_name_or_path.lower()
+                        else None
+                    ),
+                    skip_special_tokens=True,
+                ),
             )
+            if os.path.exists('./start_positions.pt'):
+                os.remove('./start_positions.pt')
+            if os.path.exists('./early_positions.pt'):
+                os.remove('./early_positions.pt')
 
-            chunk_outputs = []
-            for i in range(0, len(chunk), 125):
-                chunk_batch = chunk[i:i + 125]
-                if args.use_vllm:
-                    if os.environ['stage'] == "add":
-                        budget = args.max_tokens_per_call + (args.max_tokens_per_call // 50) + 50
-                    else:
-                        budget = args.max_tokens_per_call + (args.max_tokens_per_call // 50)
-                    os.environ["position"] = 'start'
-                    chunk_batch_outputs = llm.generate(
-                        chunk_batch,
-                        SamplingParams(
-                            temperature=args.temperature,
-                            # top_p=1,
-                            top_p=0.9,
-                            max_tokens=budget if not two_stage else 20,
-                            n=1,
-                            stop=stop_words,
-                            stop_token_ids=(
-                                [151645, 151643]
-                                if "qwen2" in args.model_name_or_path.lower()
-                                else None
-                            ),
-                            skip_special_tokens=False,
-                        ),
-                    )
-                    if os.path.exists('./start_positions.pt'):
-                        os.remove('./start_positions.pt')
-                    if os.path.exists('./early_positions.pt'):
-                        os.remove('./early_positions.pt')
-
-                    chunk_batch_outputs = sorted(chunk_batch_outputs, key=lambda x: int(x.request_id))
-                    chunk_batch_outputs = [output.outputs[0].text for output in chunk_batch_outputs]
-                    batch_chunk = [single_chunk + chunk_output for single_chunk, chunk_output in zip(chunk_batch, chunk_batch_outputs)]
-                    chunk_outputs.extend(batch_chunk)
-
-            # 处理完成后，将结果存入队列
-            output_queue.put((index, chunk_outputs))
-            
-            del llm
-            torch.cuda.empty_cache()
-
-        finally:
-            # 显式销毁 llm 对象
-            if 'llm' in locals():
-                del llm  # 确保 LLM 引擎被销毁
-            # torch.cuda.empty_cache()  # 清理 GPU 内存
-            # 释放锁（确保即使发生异常也能释放）
-            fcntl.flock(f, fcntl.LOCK_UN)
+            chunk_batch_outputs = sorted(chunk_batch_outputs, key=lambda x: int(x.request_id))
+            chunk_batch_outputs = [output.outputs[0].text for output in chunk_batch_outputs]
+            batch_chunk = [single_chunk + chunk_output for single_chunk, chunk_output in zip(chunk_batch, chunk_batch_outputs)]
+            chunk_outputs.extend(batch_chunk)
+    # 将处理结果存储到共享列表中
+    output_queue.put((index, chunk_outputs))
 
 
 def clean_code(code):
@@ -345,9 +269,6 @@ def main(llm, tokenizer, data_name, args):
     print("data:", data_name, ", remain samples:", len(examples))
     if len(examples) > 0:
         print(examples[0])
-
-    available_gpus = os.environ["CUDA_VISIBLE_DEVICES"].split(",")
-    print(f"available_gpus = {available_gpus}")
 
     # init python executor
     if "pal" in args.prompt_type:
@@ -714,7 +635,6 @@ def main(llm, tokenizer, data_name, args):
         
         # elif os.environ["tip"] == "TCMv2":
         else:
-
             available_gpus = os.environ["CUDA_VISIBLE_DEVICES"].split(",")  # 示例GPU列表，根据实际情况修改
             num_gpus = len(available_gpus)
             manager = Manager()
@@ -723,22 +643,11 @@ def main(llm, tokenizer, data_name, args):
             multi_outputs = []
             chunk_size = len(prompts) // num_gpus
             chunks = [prompts[i:i + chunk_size] for i in range(0, len(prompts), chunk_size)]
-            num_rounds = (len(chunks) + num_gpus - 1) // num_gpus #g 轮次数等于最大GPU上的任务数
-
-            for round_idx in range(num_rounds):
-                start_idx = round_idx * num_gpus
-                end_idx = min((round_idx + 1) * num_gpus, len(chunks))
-                
-                for i in range(start_idx, end_idx):
-                    chunk = chunks[i]
-                    p = Process(target=process_chunk, args=(chunk, args, available_gpus, stop_words, output_queue, i))
-                    processes.append(p)
-                    p.start()
-            # for i, chunk in enumerate(chunks):
-            #     print(f"Processing chunk {i} with size {len(chunk)}")
-            #     p = Process(target=process_chunk, args=(chunk, args, available_gpus, stop_words, output_queue, i))
-            #     processes.append(p)
-            #     p.start()
+            for i, chunk in enumerate(chunks):
+                print(f"Processing chunk {i} with size {len(chunk)}")
+                p = Process(target=process_chunk, args=(chunk, args, available_gpus, stop_words, output_queue, i))
+                processes.append(p)
+                p.start()
             for _ in range(len(chunks)):
                 result = output_queue.get()
                 if isinstance(result, tuple) and len(result) == 2:
@@ -748,21 +657,21 @@ def main(llm, tokenizer, data_name, args):
                 # multi_outputs.extend(output_queue.get())
             for p in processes:
                 p.join()
+            
             multi_outputs.sort(key=lambda x: x[0])
             outputs = []
             for _, chunk_output in multi_outputs:
                 outputs.extend(chunk_output)
-
+                
         print('stage one finished!!!\n' * 20)
         # print("Special tokens in tokenizer:", tokenizer.special_tokens_map)
         # test_token = "\n<remaining>50</remaining>\n"
         # print(f"Encoding '{test_token}':", tokenizer.encode(test_token, add_special_tokens=False))
         print(outputs[:3])
         
-        #################!     
+        #################!
         ###! stage? 1 or 2 or add
         if os.environ['stage'] == "2":
-            print("stage 2")
             two_stage_outputs = []
             modified_outputs = []
             print(f"len of outputs: {len(outputs)}")
@@ -776,47 +685,48 @@ def main(llm, tokenizer, data_name, args):
                 modified_outputs.append(modified_output)
                 # print(f"modified_output_len: {len(modified_output)}")
             
-            available_gpus = os.environ["CUDA_VISIBLE_DEVICES"].split(",")  # 示例GPU列表，根据实际情况修改
-            num_gpus = len(available_gpus)
-            manager = Manager()
-            output_queue = Queue()
-            processes = []
-            multi_outputs = []
-            prompts = modified_outputs
-            chunk_size = len(prompts) // num_gpus
-            chunks = [prompts[i:i + chunk_size] for i in range(0, len(prompts), chunk_size)]
-            num_rounds = (len(chunks) + num_gpus - 1) // num_gpus #g 轮次数等于最大GPU上的任务数
+            for i in range(0, num_prompts, chunk_size):
+                modified_chunk = modified_outputs[i:i + chunk_size]  # 获取当前的 chunk
+                if args.use_vllm:
+                    os.environ["position"] = 'start'
 
-            for round_idx in range(num_rounds):
-                start_idx = round_idx * num_gpus
-                end_idx = min((round_idx + 1) * num_gpus, len(chunks))
+                    second_outputs = llm.generate(
+                        modified_chunk,
+                        SamplingParams(
+                            temperature=args.temperature,
+                            top_p=args.top_p,
+                            max_tokens=20,
+                            n=1,
+                            stop=stop_words,
+                            stop_token_ids=(
+                                [151645, 151643]
+                                if "qwen2" in args.model_name_or_path.lower()
+                                else None
+                            ),
+                            skip_special_tokens=False, #G 设置特殊token的可见性
+                        ),
+                        
+                    )
+            
+            
+                if os.path.exists('./start_positions.pt'):
+                    os.remove('./start_positions.pt')
+                    print('start_positions.pt removed')
+                if os.path.exists('./early_positions.pt'):
+                    os.remove('./early_positions.pt')
+                    print('early_positions.pt removed')
+                    
+                second_outputs = sorted(second_outputs, key=lambda x: int(x.request_id))
+                second_outputs = [output.outputs[0].text for output in second_outputs]
                 
-                for i in range(start_idx, end_idx):
-                    chunk = chunks[i]
-                    p = Process(target=process_chunk, args=(chunk, args, available_gpus, stop_words, output_queue, i))
-                    processes.append(p)
-                    p.start()
-            # for i, chunk in enumerate(chunks):
-            #     print(f"Processing chunk {i} with size {len(chunk)}")
-            #     p = Process(target=process_chunk, args=(chunk, args, available_gpus, stop_words, output_queue, i))
-            #     processes.append(p)
-            #     p.start()
-            for _ in range(len(chunks)):
-                result = output_queue.get()
-                if isinstance(result, tuple) and len(result) == 2:
-                    multi_outputs.append(result)
-                else:
-                    print(f"Error: Received non-tuple result: {result}")
-                # multi_outputs.extend(output_queue.get())
-            for p in processes:
-                p.join()
-            multi_outputs.sort(key=lambda x: x[0])
-            outputs = []
-            for _, chunk_output in multi_outputs:
-                outputs.extend(chunk_output)
-
-
-
+                # Combine initial and second outputs
+                combined_outputs = [init + second for init, second in zip(modified_chunk, second_outputs)]
+                
+                print(f"len of combined_outputs:{len(combined_outputs)}")
+                two_stage_outputs.extend(combined_outputs) ## 直接覆盖掉就好
+                               
+            outputs = two_stage_outputs
+        
         elif os.environ['stage'] == "1":
             outputs = outputs
         
@@ -900,10 +810,7 @@ def main(llm, tokenizer, data_name, args):
         # print(f"current_prompts[:5]: {current_prompts[123:128]}")
         # assert len(outputs) == len(current_prompts)
         
-        # print(outputs)
         
-        # import pdb
-        # pdb.set_trace()
         # process all outputs
         remain_prompts = []
         remain_codes = []
@@ -1011,9 +918,31 @@ def main(llm, tokenizer, data_name, args):
         execute=True,
     )
 
-    # save outputs
-    if len(processed_samples) < len(all_samples) and args.save_outputs:
-        save_jsonl(all_samples, out_file)
+    def limit_format_reward(predict_str: str) -> float:
+        # pattern = re.compile(r"<think>.*</think>.*\\boxed\{.*\}.*", re.DOTALL)
+
+        pattern = re.compile(
+            r"(?s)"  # 启用 DOTALL 模式，让 . 匹配包括换行符在内的任意字符
+            r"<think>.*?</think>"  # 匹配 <think> 和 </think> 之间的任意内容，包括换行符
+            r"\n?"  # 匹配可能出现的换行符，可以出现 0 次或 1 次
+            r"\*\*Final Answer\*\*\\boxed\{.*\}.*?"  # 匹配 **Final Answer**\boxed{数字}
+        )
+        format_match = re.fullmatch(pattern, predict_str)
+        return 1.0 if format_match else 0.0
+
+
+
+    RL_QA_save_samples = []
+    for sample in all_samples:
+        if sample['score'] == [True] and limit_format_reward(sample['code'][0]) == 1:
+            RL_QA_save_samples.append({
+                                       "prompt": sample["question"],
+                                       "response": sample["code"][0],
+                                       "gt": sample["gt"],
+                                       "score": sample["score"],
+                                       })
+        
+    save_jsonl(RL_QA_save_samples, out_file)
 
     result_json["time_use_in_second"] = time_use
     result_json["time_use_in_minite"] = (
